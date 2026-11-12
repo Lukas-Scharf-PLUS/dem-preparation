@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Raster data (if something is written into the repository by accident)
+*.tif
+*.tif.aux.xml
+*.vrt
+*.wgs84
+*.wgs84.xml
+*.part
+*.log
+
+# Secrets (none are needed today, but never commit them)
+.env

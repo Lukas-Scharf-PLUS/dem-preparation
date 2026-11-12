@@ -1,0 +1,75 @@
+# DEM for the Vienna InSAR pipelines (ISCE2 and COMPASS).
+# BEV ALS DSM (1 m) inside Vienna + Copernicus GLO-30 around it, merged on one
+# grid with WGS84 ellipsoidal heights. Every value is explained in README.md.
+
+aoi:
+  name: vienna
+  # [west, south, east, north] in degrees (WGS84). This box contains the whole
+  # city of Vienna; every BEV tile touching it is used.
+  bbox: [16.18099875016676, 48.11744311620298, 16.587587299348154, 48.324307364563005]
+
+bursts:
+  # OPERA burst database (bounding boxes of all Sentinel-1 bursts, the file COMPASS uses).
+  burst_db: /home/lukas/projects/ADUCAT/data/input_data/s1-burst-db/opera-burst-bbox-only.sqlite3
+  relative_orbits: [22, 73, 124, 146]
+  # Extra margin (degrees) around the union of all bursts that touch the AOI.
+  # ISCE2 cuts its DEM with bounding rectangles computed for heights up to 9000 m
+  # plus 0.1 deg, which reach ~0.3 deg beyond the real burst footprint.
+  margin_deg: 0.3
+
+paths:
+  # Downloads (BEV window, optional Copernicus tiles) and intermediate files.
+  work_dir: /home/lukas/projects/ADUCAT/data/dem/dem_preparation/work
+  # Final DEM files.
+  output_dir: /home/lukas/projects/ADUCAT/data/dem/dem_preparation/output
+
+coarse_dem:
+  # "file": use the DEM below. "download": download Copernicus GLO-30 from AWS
+  # (public, no account) for exactly the area the bursts need.
+  source: file
+  file: /home/lukas/projects/ADUCAT/data/dem/cop_dem.tif
+  # Height reference of coarse_dem.file: ellipsoid | egm2008 | egm96.
+  # cop_dem.tif already holds WGS84 ellipsoid heights (checked: +44.7 m vs. the
+  # original EGM2008 tiles in Vienna). Downloaded GLO-30 tiles are always egm2008.
+  vertical_datum: ellipsoid
+
+fine_dem:
+  # BEV ALS DSM edition (Stichtag) = folder name on data.bev.gv.at, e.g. 20250915.
+  edition: "20250915"
+  # Height reference of the BEV data: auto | evrf2000_austria | gha.
+  # auto = EPSG:9274 (EVRF2000 Austria), except edition 20210915 = EPSG:5778 (GHA),
+  # as stated on the BEV product page.
+  vertical_datum: auto
+  # BEV data is used in the AOI plus this buffer (meters). Must be larger than
+  # merge.blend_width_m so the whole AOI gets pure BEV heights.
+  buffer_m: 1000
+  # null = download the full 1 m data. 0 = the 2 m overview, 1 = 4 m, ...
+  # (4x less data per level; fine for a 10 m result).
+  overview_level: null
+
+merge:
+  # Pixel size of the final DEM in meters (converted to degrees at the AOI latitude).
+  resolution_m: 5
+  # Width (meters) of the zone at the edge of the BEV area where BEV and
+  # Copernicus heights are blended linearly, to avoid a height step.
+  blend_width_m: 300
+  # BEV no-data holes up to this distance (meters) are interpolated from the
+  # surrounding BEV heights; larger holes are filled from the coarse DEM.
+  hole_fill_max_m: 100
+  # Reference frame of the output positions. BEV data is in ETRS89, which drifts
+  # ~2.5 cm/year from ITRF; Sentinel-1 orbits are in ITRF.
+  # etrs89 (no shift) | itrf2014 | itrf2020
+  horizontal_frame: itrf2020
+  # Epoch (decimal year) of the ETRS89 -> ITRF shift: the middle of your SAR time series.
+  frame_epoch: 2024.0
+
+output:
+  # Base name of the output files; "_<resolution>m" is appended.
+  name: vienna_bevdsm_cop30_ellipsoid
+  # One GeoTIFF on the final grid (for COMPASS, isce2-dolphin-mintpy, Argo).
+  write_geotiff: true
+  # A VRT that keeps 30 m outside and the fine resolution inside the BEV area
+  # (much smaller on disk; readers see one grid at the fine resolution).
+  write_mixed_resolution_vrt: true
+  # Raw ISCE2 DEM (<name>.dem.wgs84 + .xml + .vrt) for stackSentinel.py -d.
+  write_isce: true

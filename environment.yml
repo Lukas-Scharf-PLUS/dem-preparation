@@ -1,0 +1,15 @@
+# Conda environment for this repository.
+#   create: conda env create -f environment.yml
+#   update: conda env update -n dem-preparation -f environment.yml --prune
+name: dem-preparation
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - gdal>=3.8          # reading the remote Cloud-Optimized GeoTIFFs, warping, writing
+  - numpy>=1.26
+  - scipy>=1.11        # distance transform (blending), grid interpolation
+  - pyproj>=3.6        # geoid / height grids and the ETRS89 -> ITRF shift (PROJ)
+  - shapely>=2.0       # burst footprints vs. AOI
+  - pyyaml>=6
+  - pytest
