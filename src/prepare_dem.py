@@ -8,17 +8,24 @@ Steps (run one, or ``all`` in this order):
               coarse_dem.source is 'download')
     build     merge both DEMs on the output grid and write the outputs
 
+Extra step (not part of ``all``; needs the 'download' step first):
+
+    pointcloud  write the 1 m BEV DSM inside ``--bbox`` as a LAZ point cloud
+                (UTM, ellipsoid heights), e.g. for CloudCompare
+
 Examples
 --------
     python src/prepare_dem.py --config configs/vienna.yaml all
     python src/prepare_dem.py --config configs/vienna.yaml check
     python src/prepare_dem.py --config configs/vienna.yaml --resolution_m 5 build
+    python src/prepare_dem.py --config configs/vienna.yaml pointcloud --bbox 16.365 48.205 16.380 48.215
 """
 
 import argparse
 import logging
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from burst_coverage import (CoverageError, check_dem_covers, find_bursts, format_bounds,
                             log_burst_summary, required_dem_bounds)
@@ -28,13 +35,15 @@ from copdem_download import COPDEM_VERTICAL_DATUM, CopDemDownloadError, copdem_o
 from dem_merge import (build_mixed_resolution_vrt, check_difference, count_nodata, prepare_coarse_part,
                        prepare_fine_part, write_final_geotiff, write_report)
 from isce_export import export_isce_dem
+from point_cloud_export import PointCloudError, default_output_name, export_point_cloud
 from target_grid import output_grid
 from vertical_datum import VerticalDatumError, bev_height_reference, enable_proj_network, etrs89_to_itrf_shift
 
 logger = logging.getLogger("prepare_dem")
-STEPS = ("check", "download", "build", "all")
+STEPS = ("check", "download", "build", "all", "pointcloud")
 # Errors with a clear message for the user; anything else is a bug and shows a traceback.
-EXPECTED_ERRORS = (CoverageError, BevDownloadError, CopDemDownloadError, VerticalDatumError)
+EXPECTED_ERRORS = (CoverageError, BevDownloadError, CopDemDownloadError, VerticalDatumError,
+                   PointCloudError)
 
 
 def parse_arguments(argv=None):
@@ -45,7 +54,18 @@ def parse_arguments(argv=None):
     parser.add_argument("--resolution_m", type=float, help="override merge.resolution_m")
     parser.add_argument("--edition", help="override fine_dem.edition (BEV reference date, e.g. 20250915)")
     parser.add_argument("--coarse_source", choices=("file", "download"), help="override coarse_dem.source")
-    return parser.parse_args(argv)
+    parser.add_argument("--bbox", type=float, nargs=4, metavar=("WEST", "SOUTH", "EAST", "NORTH"),
+                        help="pointcloud step: lon/lat box (degrees) to export")
+    parser.add_argument("--output", help="pointcloud step: LAZ file to write "
+                        "(default: <paths.output_dir>/pointclouds/<name>.laz)")
+    arguments = parser.parse_args(argv)
+    if arguments.step == "pointcloud":
+        if arguments.bbox is None:
+            parser.error("the pointcloud step needs --bbox WEST SOUTH EAST NORTH")
+        west, south, east, north = arguments.bbox
+        if west >= east or south >= north:
+            parser.error("--bbox must be WEST SOUTH EAST NORTH with WEST < EAST and SOUTH < NORTH")
+    return arguments
 
 
 def setup_logging(log_file):
@@ -193,6 +213,33 @@ def run_build(settings, bursts_per_orbit, required_bounds):
     })
 
 
+def run_pointcloud(settings, bbox, output):
+    """Export the downloaded 1 m BEV DSM inside ``bbox`` as a LAZ point cloud.
+
+    Uses the same height reference and ETRS89 -> ITRF shift as the 'build' step,
+    so the points match the DEM given to ISCE2.
+
+    Raises
+    ------
+    CoverageError
+        If the BEV DSM has not been downloaded yet.
+    PointCloudError
+        If the box is outside the download or too large.
+    """
+    bev_mosaic = settings.work_dir / "bev" / MOSAIC_FILE_NAME
+    if not bev_mosaic.is_file():
+        raise CoverageError(f"BEV DSM not downloaded yet ({bev_mosaic}); run the 'download' step.")
+    out_path = Path(output).expanduser() if output else (
+        settings.output_dir / "pointclouds"
+        / default_output_name(settings.aoi.name, settings.fine_dem.edition, bbox))
+
+    west, south, east, north = bbox
+    frame_shift = etrs89_to_itrf_shift(settings.merge.horizontal_frame, settings.merge.frame_epoch,
+                                       (west + east) / 2, (south + north) / 2)
+    fine_reference = bev_height_reference(settings.fine_dem.edition, settings.fine_dem.vertical_datum)
+    export_point_cloud(bev_mosaic, tuple(bbox), fine_reference, frame_shift, out_path)
+
+
 def main(argv=None):
     """Run the requested step(s). Returns the process exit code."""
     arguments = parse_arguments(argv)
@@ -210,6 +257,11 @@ def main(argv=None):
     logger.info("Step '%s' with config %s", arguments.step, settings.config_file)
     enable_proj_network()
     try:
+        if arguments.step == "pointcloud":
+            # Independent of the bursts and the coarse DEM, so 'check' is not run.
+            run_pointcloud(settings, arguments.bbox, arguments.output)
+            logger.info("Done.")
+            return 0
         bursts_per_orbit, required_bounds = run_check(settings)
         if arguments.step in ("download", "all"):
             run_download(settings, required_bounds)

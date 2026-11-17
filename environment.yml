@@ -12,4 +12,6 @@ dependencies:
   - pyproj>=3.6        # geoid / height grids and the ETRS89 -> ITRF shift (PROJ)
   - shapely>=2.0       # burst footprints vs. AOI
   - pyyaml>=6
+  - laspy>=2.4         # pointcloud step: LAZ point cloud export
+  - lazrs-python       # LAZ compression backend for laspy
   - pytest

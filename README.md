@@ -10,6 +10,9 @@ Builds **one DEM for the Sentinel-1 InSAR pipelines of Vienna** (ISCE2 and COMPA
 - written as a **GeoTIFF**, a space-saving **mixed-resolution VRT** and an **ISCE2 DEM**
   (`.dem.wgs84` + `.xml` + `.vrt`).
 
+Extra: the `pointcloud` step exports any part of the downloaded **1 m BEV DSM as a LAZ point
+cloud** (UTM, ellipsoid heights) to look at in CloudCompare, e.g. next to InSAR points.
+
 The goal is better geolocation of scatterers: a 10 m ALS surface model in the city is much
 closer to the real roof and street heights than the 30 m Copernicus DEM.
 
@@ -67,7 +70,30 @@ Command-line options override the config:
 | `--edition` | `fine_dem.edition` | `--edition 20240915` |
 | `--coarse_source` | `coarse_dem.source` | `--coarse_source download` |
 
-Every step runs the coverage check first. `download` and `build` reuse files that already
+### Point cloud of the 1 m DSM (for CloudCompare)
+
+```bash
+python src/prepare_dem.py --config configs/vienna.yaml pointcloud --bbox 16.365 48.204 16.380 48.213
+# optional: --output /some/path/stephansdom.laz
+```
+
+Writes every 1 m DSM pixel inside the lon/lat box `--bbox WEST SOUTH EAST NORTH` as one point
+to `<paths.output_dir>/pointclouds/<aoi.name>_bev_dsm_<edition>_<box>.laz`. It needs the
+`download` step first (with `fine_dem.overview_level: null` for 1 m) and does not run the
+coverage check. `all` does not run it.
+
+- **Same reference as the DEM:** heights above the **WGS84 ellipsoid**, positions shifted
+  ETRS89 → ITRF like the `build` step, x/y in the **WGS84 UTM zone** of the box (EPSG:32633
+  for Vienna). So the cloud lines up with InSAR points from `isce2-dolphin-mintpy` (convert
+  those to the same UTM zone, e.g. `geopandas` `.to_crs("EPSG:32633")`).
+- **Size:** 1 km × 1 km ≈ 1.3 million points ≈ 2.5 MB LAZ, about 1 s (Stephansdom test).
+  Boxes above 100 million points (about 10 km × 10 km) are refused: CloudCompare would need
+  many GB of memory. All of Vienna would be ~800 million points.
+- **In CloudCompare:** *File → Open* the `.laz`. Accept the suggested *global shift* (UTM
+  coordinates are large numbers). Colour by height: *Edit → Colors → Height ramp*, or use the
+  z coordinate as scalar field (*Edit → Scalar fields → Export coordinate(s) to SF*).
+
+Every DEM step runs the coverage check first. `download` and `build` reuse files that already
 exist, so you can repeat them, or change the resolution and run `build` again without
 downloading anything.
 
@@ -138,6 +164,9 @@ build     coarse DEM ──► cut to the area, convert to ellipsoid heights (30
                          + height offset (EVRF2000 Austria → ellipsoid), fill small holes,
                          blend into the coarse heights at the edge               = fine part
           coarse part + fine part ──► mixed-resolution VRT ──► GeoTIFF ──► ISCE2 DEM
+
+pointcloud  BEV window (1 m) ──► pixels inside --bbox ──► ellipsoid heights, ETRS89 → ITRF,
+            UTM x/y ──► one point per pixel ──► LAZ          (separate; not part of 'all')
 ```
 
 ### 1. Which bursts, which area (`src/burst_coverage.py`)
@@ -228,6 +257,16 @@ pixel, GDAL from its *corner*, so the half-pixel difference is applied. (ISCE2's
 writer and `gdal2isce_xml.py` skip this; the `.vrt` written here is correct.) The test
 suite checks that ISCE2 reads the header correctly when ISCE2 is installed.
 
+### 6. Point cloud export (`src/point_cloud_export.py`)
+
+Reads the 1 m pixels of the downloaded mosaic (EPSG:3035) that cover the box and converts
+each pixel center with the same height offset and frame shift as the `build` step, so the
+points are exactly what the DEM was averaged from. Nothing is resampled. x/y go to UTM
+because a 3D viewer needs all axes in meters. The file is LAS 1.4 (point format 6, the
+first that stores the CRS as WKT) with 1 mm coordinate steps, LAZ-compressed by `laspy`
+with the `lazrs` backend. It is written as `<name>.part` and renamed at the end.
+`laspy` is only imported for this step, so the DEM steps work without it.
+
 ---
 
 ## Checking the result
@@ -269,7 +308,7 @@ dem_preparation/
 ├── configs/
 │   └── vienna.yaml        config for Vienna, orbits 22/73/124/146
 ├── src/
-│   ├── prepare_dem.py     command line: check / download / build / all
+│   ├── prepare_dem.py     command line: check / download / build / all / pointcloud
 │   ├── config.py          loading and validating the YAML config
 │   ├── burst_coverage.py  bursts touching the AOI, area the DEM must cover, coverage check
 │   ├── bev_download.py    BEV ALS DSM: tile selection, windowed COG download
@@ -277,7 +316,8 @@ dem_preparation/
 │   ├── vertical_datum.py  height offsets to the ellipsoid, ETRS89 → ITRF shift (PROJ)
 │   ├── target_grid.py     output lat/lon grid from a resolution in meters
 │   ├── dem_merge.py       coarse part, fine part, blending, VRT, GeoTIFF, report
-│   └── isce_export.py     ISCE2 DEM (.dem.wgs84 + .xml + .vrt)
+│   ├── isce_export.py     ISCE2 DEM (.dem.wgs84 + .xml + .vrt)
+│   └── point_cloud_export.py  1 m BEV DSM inside a box → LAZ point cloud (UTM, ellipsoid heights)
 └── tests/                 pytest tests (synthetic data; a few use PROJ grids if reachable)
 ```
 
@@ -293,7 +333,8 @@ python -m pytest -q
 The tests use small synthetic rasters and a fake burst database and do not download DEM
 data. The tests for the real Vienna height offsets and the ITRF shift need PROJ grids from
 `cdn.proj.org` and are skipped when they cannot be loaded. The ISCE2 header test runs only
-where ISCE2 is installed (e.g. in `isce2-dolphin-mintpy`).
+where ISCE2 is installed (e.g. in `isce2-dolphin-mintpy`). The point cloud tests are
+skipped when `laspy` is not installed.
 
 ---
 
